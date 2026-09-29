@@ -5,7 +5,10 @@ const itemLabel = (item: ChecklistItem) => `${item.challenge || '未命名'} →
 export function buildVersionOptions(project: ChecklistProject): VersionOption[] {
   return [
     { id: 'current', label: `当前 r${project.revision} · ${statusLabel(project.status)}` },
-    ...project.revisions.map((revision) => ({ id: revision.id, label: `r${revision.revision} · ${statusLabel(revision.status)} · ${new Date(revision.createdAt).toLocaleDateString('zh-CN')}` }))
+    ...project.revisions.map((revision) => ({
+      id: revision.id,
+      label: `r${revision.revision} · ${statusLabel(revision.status)} · ${new Date(revision.createdAt).toLocaleDateString('zh-CN')}${revision.review ? '' : ' · 历史留档'}`
+    }))
   ];
 }
 

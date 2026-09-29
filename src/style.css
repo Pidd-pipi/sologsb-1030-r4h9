@@ -100,6 +100,16 @@ kbd { border: 1px solid var(--gray-a7); border-bottom-width: 2px; border-radius:
 .diff-before { background: color-mix(in srgb, var(--red-3) 55%, var(--color-panel)); }
 .diff-after { background: color-mix(in srgb, var(--green-3) 55%, var(--color-panel)); }
 .diff-before pre, .diff-after pre { margin: 7px 0 0; white-space: pre-wrap; word-break: break-word; font: 11px/1.5 ui-monospace, monospace; }
+.signoff-meta { display: grid; gap: 6px; margin: 14px 0; padding: 11px 13px; border: 1px solid var(--gray-a5); border-radius: 11px; background: var(--gray-a2); font-size: 12px; }
+.signoff-meta > div { display: flex; gap: 10px; align-items: baseline; }
+.signoff-meta span { flex: 0 0 78px; color: var(--gray-10); }
+.signoff-meta code, .workflow-bar code { font-family: ui-monospace, monospace; font-size: 11px; color: var(--accent-11); }
+.signoff-field { display: grid; gap: 6px; margin-top: 12px; }
+.signoff-field > span { font-size: 12px; font-weight: 700; }
+.revision-signoff-list { display: grid; gap: 10px; }
+.revision-signoff-card { overflow: hidden; }
+.revision-signoff-card .signoff-meta { margin: 10px 0 0; }
+.print-signoff { margin-top: 18px; padding-top: 12px; border-top: 1px dashed var(--gray-a7); }
 .empty-page { display: grid; justify-items: center; padding: 70px 20px; border: 1px dashed var(--gray-a7); border-radius: 16px; color: var(--gray-10); }
 .empty-page strong { color: var(--gray-12); margin-bottom: 6px; }
 .print-sheet { background: var(--color-panel-solid); border: 1px solid var(--gray-a5); border-radius: 16px; padding: 24px; box-shadow: var(--shadow-3); }

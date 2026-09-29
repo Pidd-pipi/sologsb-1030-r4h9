@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createInitialState } from './data';
-import type { ChecklistItem, ChecklistProject, ChecklistRevision, FlightStage, WorkspaceState } from './types';
+import { contentFingerprint } from './fingerprint';
+import type { ChecklistItem, ChecklistProject, ChecklistRevision, FlightStage, ReviewSignoff, WorkspaceState } from './types';
 
 const STORAGE_KEY = 'sologsb-1030-workspace-v1';
 const clone = <T>(value: T): T => structuredClone(value);
@@ -12,7 +13,16 @@ function loadState(): WorkspaceState {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved) as WorkspaceState;
-      if (parsed.schemaVersion === 1 && parsed.projects?.length) return parsed;
+      if (parsed.schemaVersion === 1 && parsed.projects?.length) {
+        // 兼容旧存档：补齐签认字段。历史冻结版本无签认数据，按历史留档处理。
+        parsed.projects.forEach((project) => {
+          if (!project.review) project.review = null;
+          project.revisions.forEach((revision) => {
+            if (!revision.review) revision.review = null;
+          });
+        });
+        return parsed;
+      }
     }
   } catch {
     // Corrupted local draft falls back to the bundled operational checklist.
@@ -81,6 +91,7 @@ export function useChecklistStore() {
         status: 'draft',
         updatedAt: now(),
         reviewNote: '',
+        review: null,
         stages: [{ id: uid('stage'), name: '飞行前检查', order: 0, description: '说明本阶段目标。' }],
         items: [],
         revisions: []
@@ -182,35 +193,92 @@ export function useChecklistStore() {
     });
   }, [commit]);
 
-  const submitForReview = useCallback(() => {
+  const submitForReview = useCallback((submitter: string) => {
     directUpdate((project) => {
+      const fingerprint = contentFingerprint(project);
       project.status = 'review';
+      project.reviewNote = '';
+      project.review = {
+        submittedBy: submitter.trim(),
+        submittedAt: now(),
+        fingerprint,
+        reviewer: '',
+        reviewedAt: '',
+        comment: ''
+      };
+    });
+  }, [directUpdate]);
+
+  const rejectReview = useCallback(() => {
+    directUpdate((project) => {
+      // 退回后旧签认失效，回到编辑中；修改后需重新提交复核。
+      project.status = 'draft';
+      project.review = null;
       project.reviewNote = '';
     });
   }, [directUpdate]);
 
-  const freezeRevision = useCallback((note: string) => {
-    directUpdate((project) => {
-      const version = project.revision;
+  /**
+   * 复核通过并冻结。返回错误信息字符串表示被阻断，返回 null 表示成功。
+   * 阻断规则：
+   *  - 没有待复核的提交记录；
+   *  - 内容指纹与提交时不一致（内容被改动）；
+   *  - 复核人姓名为空；
+   *  - 复核人与提交人为同一人；
+   *  - 当前版本已冻结过（同一版本不允许重复冻结）。
+   */
+  const freezeRevision = useCallback((note: string, reviewer: string): string | null => {
+    const project = state.projects.find((entry) => entry.id === state.selectedProjectId);
+    if (!project) return '未找到当前检查单项目。';
+    if (!project.review) return '没有待复核的提交记录，请先提交复核。';
+    const fingerprint = contentFingerprint(project);
+    if (fingerprint !== project.review.fingerprint) {
+      return '内容指纹与提交时不一致，检查单已被修改，请退回后重新提交复核。';
+    }
+    const reviewerName = reviewer.trim();
+    if (!reviewerName) return '请填写复核人姓名。';
+    if (reviewerName === project.review.submittedBy) {
+      return '复核人与提交人不能为同一人，请由另一位复核人冻结。';
+    }
+    if (project.revisions.some((revision) => revision.revision === project.revision)) {
+      return '当前版本已冻结，不能重复冻结；如需修改请创建新修订。';
+    }
+
+    let blocked: string | null = null;
+    directUpdate((target) => {
+      if (!target.review || target.review.fingerprint !== fingerprint) {
+        blocked = '复核状态已变化，请刷新后重试。';
+        return;
+      }
+      const signoff: ReviewSignoff = {
+        ...target.review,
+        reviewer: reviewerName,
+        reviewedAt: now(),
+        comment: note.trim()
+      };
       const snapshot: ChecklistRevision = {
         id: uid('revision'),
-        revision: version,
+        revision: target.revision,
         status: 'frozen',
         createdAt: now(),
         note: note.trim() || '复核通过并冻结',
-        stages: clone(project.stages),
-        items: clone(project.items)
+        stages: clone(target.stages),
+        items: clone(target.items),
+        review: signoff
       };
-      project.revisions.unshift(snapshot);
-      project.status = 'frozen';
-      project.reviewNote = note.trim();
+      target.revisions.unshift(snapshot);
+      target.status = 'frozen';
+      target.reviewNote = note.trim();
+      target.review = signoff;
     });
-  }, [directUpdate]);
+    return blocked;
+  }, [state, directUpdate]);
 
   const createRevision = useCallback(() => {
     directUpdate((project) => {
       project.revision += 1;
       project.status = 'draft';
+      project.review = null;
       project.reviewNote = '';
       project.updatedAt = now();
     });
@@ -259,6 +327,7 @@ export function useChecklistStore() {
     reorderItem,
     nudgeItem,
     submitForReview,
+    rejectReview,
     freezeRevision,
     createRevision,
     undo,

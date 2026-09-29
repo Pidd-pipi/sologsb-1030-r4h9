@@ -22,6 +22,7 @@ import {
   Tooltip
 } from '@radix-ui/themes';
 import { buildVersionOptions, diffVersions } from './diff';
+import { contentFingerprint } from './fingerprint';
 import { useChecklistStore } from './store';
 import type { ChecklistItem, ChecklistProject, IssueLevel, ValidationIssue, WorkflowStatus } from './types';
 import { validateProject } from './validation';
@@ -54,8 +55,12 @@ function App() {
   const [activeTab, setActiveTab] = useState('editor');
   const [showHelp, setShowHelp] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
-  const [freezeOpen, setFreezeOpen] = useState(false);
-  const [freezeNote, setFreezeNote] = useState('');
+  const [submitOpen, setSubmitOpen] = useState(false);
+  const [submitterName, setSubmitterName] = useState('');
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewerName, setReviewerName] = useState('');
+  const [reviewComment, setReviewComment] = useState('');
+  const [reviewError, setReviewError] = useState('');
   const [leftVersion, setLeftVersion] = useState('current');
   const [rightVersion, setRightVersion] = useState(project.revisions[0]?.id ?? '');
   const [savePulse, setSavePulse] = useState(false);
@@ -82,6 +87,15 @@ function App() {
       }))
       .filter((group) => !query || group.items.length > 0 || group.stage.name.toLocaleLowerCase('zh-CN').includes(query));
   }, [project, search]);
+
+  const currentFingerprint = useMemo(() => contentFingerprint(project), [project]);
+  const reviewFingerprintMismatch = !!project.review && currentFingerprint !== project.review.fingerprint;
+  const reviewSamePerson = !!project.review && reviewerName.trim().length > 0 && reviewerName.trim() === project.review.submittedBy;
+  const reviewBlockedReason = reviewFingerprintMismatch
+    ? '内容指纹与提交时不一致，检查单已被修改，请退回后重新提交复核。'
+    : reviewSamePerson
+      ? '复核人与提交人不能为同一人，请由另一位复核人冻结。'
+      : '';
 
   useEffect(() => {
     if (!project.items.some((item) => item.id === selectedItemId)) setSelectedItemId(project.items[0]?.id ?? '');
@@ -235,8 +249,20 @@ function App() {
           <Flex gap="2" align="center" wrap="wrap">
             <Badge color={statusMeta[project.status].color} size="2">r{project.revision} · {statusMeta[project.status].label}</Badge>
             <Text size="1" color="gray">{errors ? `${errors} 个阻断` : '无阻断问题'} · {warnings} 个警告</Text>
-            {project.status === 'draft' && <Button color="amber" onClick={store.submitForReview} disabled={errors > 0}>提交复核</Button>}
-            {project.status === 'review' && <Button color="green" onClick={() => setFreezeOpen(true)} disabled={errors > 0}>复核通过并冻结</Button>}
+            {project.status === 'review' && project.review && (
+              <Text size="1" color="gray">提交人 {project.review.submittedBy} · {new Date(project.review.submittedAt).toLocaleString('zh-CN')} · 指纹 <code>{project.review.fingerprint}</code></Text>
+            )}
+            {project.status === 'frozen' && project.review && (
+              <Text size="1" color="gray">签认：{project.review.submittedBy} 提交 → {project.review.reviewer} 复核 · {new Date(project.review.reviewedAt).toLocaleString('zh-CN')}</Text>
+            )}
+            {project.status === 'frozen' && !project.review && <Badge color="gray" variant="soft">历史留档 · 无签认记录</Badge>}
+            {project.status === 'draft' && <Button color="amber" onClick={() => { setSubmitterName(''); setSubmitOpen(true); }} disabled={errors > 0}>提交复核</Button>}
+            {project.status === 'review' && (
+              <>
+                <Button color="red" variant="soft" onClick={() => { if (window.confirm('退回后本次提交的签认将失效，需修改后重新提交复核。确认退回？')) store.rejectReview(); }}>退回修改</Button>
+                <Button color="green" onClick={() => { setReviewerName(''); setReviewComment(''); setReviewError(''); setReviewOpen(true); }}>复核并冻结</Button>
+              </>
+            )}
             {project.status === 'frozen' && <Button onClick={store.createRevision}>创建修订 r{project.revision + 1}</Button>}
             <Button variant="soft" onClick={() => setShowPreview(true)}>只读预览</Button>
             <Button variant="soft" onClick={() => window.print()}>打印</Button>
@@ -429,6 +455,35 @@ function App() {
                     </Card>
                   )) : <div className="empty-page"><strong>两个版本没有差异</strong><span>选择不同版本后可查看新增、删除和修改的检查项。</span></div>}
                 </div>
+                <Separator size="4" my="5" />
+                <Heading size="4" mb="3">冻结版本签认记录</Heading>
+                <div className="revision-signoff-list">
+                  {project.revisions.length ? project.revisions.map((revision) => (
+                    <Card key={revision.id} className="revision-signoff-card">
+                      <Flex justify="between" align="center" wrap="wrap" gap="2">
+                        <Flex gap="2" align="center">
+                          <Badge color="green">r{revision.revision}</Badge>
+                          <Text size="2" weight="bold">{revision.note}</Text>
+                        </Flex>
+                        {revision.review
+                          ? <Badge color="blue" variant="soft">已签认</Badge>
+                          : <Badge color="gray" variant="soft">历史留档</Badge>}
+                      </Flex>
+                      {revision.review ? (
+                        <div className="signoff-meta">
+                          <div><span>提交人</span>{revision.review.submittedBy}</div>
+                          <div><span>提交时间</span>{new Date(revision.review.submittedAt).toLocaleString('zh-CN')}</div>
+                          <div><span>复核人</span>{revision.review.reviewer}</div>
+                          <div><span>复核时间</span>{new Date(revision.review.reviewedAt).toLocaleString('zh-CN')}</div>
+                          <div><span>内容指纹</span><code>{revision.review.fingerprint}</code></div>
+                          {revision.review.comment && <div><span>复核意见</span>{revision.review.comment}</div>}
+                        </div>
+                      ) : (
+                        <Text size="1" color="gray">历史冻结版本，无签认记录；可用于版本比较，不能补签。创建新修订后按新流程办理签认。</Text>
+                      )}
+                    </Card>
+                  )) : <div className="empty-page"><strong>暂无冻结版本</strong><span>提交复核并冻结后，签认记录将显示在这里。</span></div>}
+                </div>
               </div>
             </Tabs.Content>
 
@@ -454,12 +509,52 @@ function App() {
         </Dialog.Content>
       </Dialog.Root>
 
-      <Dialog.Root open={freezeOpen} onOpenChange={setFreezeOpen}>
+      <Dialog.Root open={submitOpen} onOpenChange={setSubmitOpen}>
         <Dialog.Content maxWidth="520px">
-          <Dialog.Title>冻结 r{project.revision}</Dialog.Title>
-          <Dialog.Description size="2" color="gray">冻结后不可直接编辑，只能通过创建新修订继续修改。</Dialog.Description>
-          <TextArea mt="4" value={freezeNote} onChange={(event) => setFreezeNote(event.target.value)} placeholder="复核意见或版本说明" />
-          <Flex gap="3" justify="end" mt="4"><Dialog.Close><Button variant="soft">取消</Button></Dialog.Close><Button color="green" onClick={() => { store.freezeRevision(freezeNote); setFreezeOpen(false); setFreezeNote(''); }}>确认冻结</Button></Flex>
+          <Dialog.Title>提交复核 r{project.revision}</Dialog.Title>
+          <Dialog.Description size="2" color="gray">提交后内容将锁定，由另一位复核人核对并冻结。</Dialog.Description>
+          <div className="signoff-meta">
+            <div><span>内容指纹</span><code>{currentFingerprint}</code></div>
+            <div><span>规模</span>{project.items.length} 个检查项 · {project.stages.length} 个阶段</div>
+          </div>
+          <label className="signoff-field">
+            <span>提交人</span>
+            <TextField.Root value={submitterName} onChange={(event) => setSubmitterName(event.target.value)} placeholder="您的姓名" />
+          </label>
+          <Flex gap="3" justify="end" mt="4"><Dialog.Close><Button variant="soft">取消</Button></Dialog.Close><Button color="amber" disabled={!submitterName.trim()} onClick={() => { store.submitForReview(submitterName.trim()); setSubmitOpen(false); }}>提交复核</Button></Flex>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      <Dialog.Root open={reviewOpen} onOpenChange={setReviewOpen}>
+        <Dialog.Content maxWidth="560px">
+          <Dialog.Title>复核 r{project.revision}</Dialog.Title>
+          <Dialog.Description size="2" color="gray">核对提交内容与指纹，确认无误后由另一位复核人冻结。</Dialog.Description>
+          {project.review && (
+            <div className="signoff-meta">
+              <div><span>提交人</span>{project.review.submittedBy}</div>
+              <div><span>提交时间</span>{new Date(project.review.submittedAt).toLocaleString('zh-CN')}</div>
+              <div><span>提交指纹</span><code>{project.review.fingerprint}</code></div>
+              <div><span>当前指纹</span><code>{currentFingerprint}</code> {reviewFingerprintMismatch ? <Badge color="red" size="1">不一致</Badge> : <Badge color="green" size="1">一致</Badge>}</div>
+            </div>
+          )}
+          <label className="signoff-field">
+            <span>复核人</span>
+            <TextField.Root value={reviewerName} onChange={(event) => setReviewerName(event.target.value)} placeholder="另一位复核人的姓名" />
+          </label>
+          <label className="signoff-field">
+            <span>复核意见</span>
+            <TextArea value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} placeholder="复核意见或版本说明（可选）" />
+          </label>
+          {(reviewError || reviewBlockedReason) && <Callout.Root color="red" mt="3"><Callout.Text>{reviewError || reviewBlockedReason}</Callout.Text></Callout.Root>}
+          <Flex gap="3" justify="end" mt="4">
+            <Dialog.Close><Button variant="soft">取消</Button></Dialog.Close>
+            <Button color="red" variant="soft" onClick={() => { setReviewOpen(false); store.rejectReview(); }}>退回修改</Button>
+            <Button color="green" disabled={!reviewerName.trim() || !!reviewBlockedReason} onClick={() => {
+              const error = store.freezeRevision(reviewComment, reviewerName.trim());
+              if (error) { setReviewError(error); return; }
+              setReviewOpen(false); setReviewerName(''); setReviewComment(''); setReviewError('');
+            }}>复核通过并冻结</Button>
+          </Flex>
         </Dialog.Content>
       </Dialog.Root>
 
@@ -501,6 +596,13 @@ function PrintableChecklist({ project, compact = false }: { project: ChecklistPr
           </table>
         </section>
       ))}
+      <footer className="print-signoff">
+        {project.review ? (
+          <Text size="1" color="gray">签认：{project.review.submittedBy}（提交）· {project.review.reviewer}（复核）· 指纹 {project.review.fingerprint} · {new Date(project.review.reviewedAt).toLocaleString('zh-CN')}</Text>
+        ) : project.status === 'frozen' ? (
+          <Text size="1" color="gray">历史留档 · 无签认记录</Text>
+        ) : null}
+      </footer>
     </article>
   );
 }

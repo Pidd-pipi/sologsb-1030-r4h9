@@ -2,6 +2,21 @@ export type WorkflowStatus = 'draft' | 'review' | 'frozen';
 export type IssueLevel = 'error' | 'warning' | 'info';
 export type IssueType = 'duplicate' | 'missing-response' | 'unreachable-precondition' | 'stage-order' | 'orphan-stage';
 
+/**
+ * 复核签认记录。
+ * - 提交复核时记录提交人、内容指纹与时间；
+ * - 复核通过时补填复核人、复核时间与意见。
+ * 历史冻结版本可能没有签认数据（review 为 null），按历史留档处理，不能补签。
+ */
+export interface ReviewSignoff {
+  submittedBy: string;
+  submittedAt: string;
+  fingerprint: string;
+  reviewer: string;
+  reviewedAt: string;
+  comment: string;
+}
+
 export interface FlightStage {
   id: string;
   name: string;
@@ -29,6 +44,8 @@ export interface ChecklistRevision {
   note: string;
   stages: FlightStage[];
   items: ChecklistItem[];
+  /** 冻结时的签认记录；历史冻结版本为 null（历史留档，不可补签）。 */
+  review: ReviewSignoff | null;
 }
 
 export interface ChecklistProject {
@@ -39,6 +56,8 @@ export interface ChecklistProject {
   status: WorkflowStatus;
   updatedAt: string;
   reviewNote: string;
+  /** 当前修订周期的签认记录；编辑中或退回后为 null。 */
+  review: ReviewSignoff | null;
   stages: FlightStage[];
   items: ChecklistItem[];
   revisions: ChecklistRevision[];
