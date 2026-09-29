@@ -94,6 +94,22 @@ kbd { border: 1px solid var(--gray-a7); border-bottom-width: 2px; border-radius:
 .version-controls { display: grid; grid-template-columns: minmax(230px, 1fr) 40px minmax(230px, 1fr); gap: 14px; align-items: end; max-width: 720px; margin: 16px 0 22px; }
 .version-arrow { text-align: center; font-size: 24px; color: var(--gray-9); padding-bottom: 5px; }
 .diff-list { display: grid; gap: 10px; }
+.revision-archive { display: grid; gap: 10px; margin: 18px 0; }
+.revision-card { padding: 14px; border: 1px solid var(--green-a6); }
+.revision-card.legacy { border-color: var(--amber-a7); background: var(--amber-a2); }
+.signature-lines { display: grid; gap: 4px; font-size: 12px; color: var(--gray-11); }
+.signature-lines strong { display: inline-block; min-width: 64px; color: var(--gray-12); margin-right: 6px; }
+.approval-panel { padding: 12px 14px; border: 1px solid var(--accent-a6); background: var(--accent-a2); }
+.approval-panel.valid { border-color: var(--green-a7); background: var(--green-a2); }
+.approval-panel.invalid { border-color: var(--red-a7); background: var(--red-a2); }
+.approval-panel.idle { background: var(--gray-a2); }
+.dialog-field { display: grid; gap: 6px; margin-top: 14px; font-size: 12px; font-weight: 700; }
+.freeze-check { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.freeze-check div { display: grid; gap: 3px; padding: 9px; border: 1px solid var(--gray-a5); border-radius: 10px; background: var(--gray-a2); }
+.freeze-check span { font-size: 10px; color: var(--gray-10); }
+.freeze-check code.valid { color: var(--green-11); }
+.freeze-check code.invalid { color: var(--red-11); }
+.print-signatures { margin-top: 18px; }
 .diff-card { overflow: hidden; }
 .diff-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .diff-before, .diff-after { border: 1px solid var(--gray-a5); border-radius: 10px; padding: 10px; overflow: hidden; }

@@ -57,6 +57,8 @@ const project: ChecklistProject = {
   status: 'draft',
   updatedAt: '2026-09-25T00:12:00.000Z',
   reviewNote: '',
+  approval: null,
+  lastReturn: null,
   stages: structuredClone(stages),
   items: structuredClone(items),
   revisions: [
@@ -66,6 +68,7 @@ const project: ChecklistProject = {
       status: 'frozen',
       createdAt: '2026-09-20T04:20:00.000Z',
       note: '训练飞行前发布版本',
+      approval: null,
       stages: structuredClone(stages),
       items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization').map((entry) => entry.id === 'item-flaps' ? { ...entry, response: 'CHECKED' } : entry))
     },
@@ -75,6 +78,7 @@ const project: ChecklistProject = {
       status: 'frozen',
       createdAt: '2026-09-12T07:30:00.000Z',
       note: '初始基线',
+      approval: null,
       stages: structuredClone(stages.slice(0, 5)),
       items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization' && entry.id !== 'item-landing-clear'))
     }

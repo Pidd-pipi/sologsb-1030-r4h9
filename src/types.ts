@@ -21,12 +21,28 @@ export interface ChecklistItem {
   updatedAt: string;
 }
 
+export interface ReviewApproval {
+  submitterName: string;
+  submittedAt: string;
+  submittedFingerprint: string;
+  reviewerName?: string;
+  reviewedAt?: string;
+  reviewedFingerprint?: string;
+}
+
+export interface ReviewReturn {
+  reason: string;
+  fingerprint: string;
+  returnedAt: string;
+}
+
 export interface ChecklistRevision {
   id: string;
   revision: number;
   status: WorkflowStatus;
   createdAt: string;
   note: string;
+  approval: ReviewApproval | null;
   stages: FlightStage[];
   items: ChecklistItem[];
 }
@@ -39,6 +55,8 @@ export interface ChecklistProject {
   status: WorkflowStatus;
   updatedAt: string;
   reviewNote: string;
+  approval: ReviewApproval | null;
+  lastReturn: ReviewReturn | null;
   stages: FlightStage[];
   items: ChecklistItem[];
   revisions: ChecklistRevision[];

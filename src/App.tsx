@@ -22,13 +22,14 @@ import {
   Tooltip
 } from '@radix-ui/themes';
 import { buildVersionOptions, diffVersions } from './diff';
+import { contentFingerprint, formatDateTime, normalizeName, shortFingerprint } from './approval';
 import { useChecklistStore } from './store';
-import type { ChecklistItem, ChecklistProject, IssueLevel, ValidationIssue, WorkflowStatus } from './types';
+import type { ChecklistItem, ChecklistProject, IssueLevel, ReviewApproval, ValidationIssue, WorkflowStatus } from './types';
 import { validateProject } from './validation';
 
 const statusMeta: Record<WorkflowStatus, { label: string; color: 'gray' | 'amber' | 'green'; description: string }> = {
   draft: { label: '编辑中', color: 'gray', description: '内容可修改，完成校验后提交复核。' },
-  review: { label: '复核中', color: 'amber', description: '内容已锁定，复核人确认后冻结发布。' },
+  review: { label: '复核中', color: 'amber', description: '内容已锁定，须由另一位复核人核对指纹后冻结。' },
   frozen: { label: '已冻结', color: 'green', description: '只读发布版本；需要修改时创建新修订。' }
 };
 
@@ -54,8 +55,14 @@ function App() {
   const [activeTab, setActiveTab] = useState('editor');
   const [showHelp, setShowHelp] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [submitOpen, setSubmitOpen] = useState(false);
+  const [submitterName, setSubmitterName] = useState('');
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [returnReason, setReturnReason] = useState('');
   const [freezeOpen, setFreezeOpen] = useState(false);
+  const [reviewerName, setReviewerName] = useState('');
   const [freezeNote, setFreezeNote] = useState('');
+  const [workflowError, setWorkflowError] = useState('');
   const [leftVersion, setLeftVersion] = useState('current');
   const [rightVersion, setRightVersion] = useState(project.revisions[0]?.id ?? '');
   const [savePulse, setSavePulse] = useState(false);
@@ -65,6 +72,13 @@ function App() {
   const issues = useMemo(() => validateProject(project), [project]);
   const errors = issues.filter((issue) => issue.level === 'error').length;
   const warnings = issues.filter((issue) => issue.level === 'warning').length;
+  const currentFingerprint = useMemo(() => contentFingerprint(project), [project]);
+  const approval = project.approval;
+  const normalizedReviewerName = normalizeName(reviewerName);
+  const fingerprintChanged = project.status === 'review' && !!approval && approval.submittedFingerprint !== currentFingerprint;
+  const sameReviewerName = project.status === 'review' && !!approval && normalizeName(approval.submitterName) === normalizedReviewerName;
+  const unchangedAfterReturn = project.status === 'draft' && !!project.lastReturn && project.lastReturn.fingerprint === currentFingerprint;
+  const freezeBlocked = errors > 0 || !approval || fingerprintChanged || sameReviewerName || !normalizedReviewerName;
   const selectedItem = project.items.find((item) => item.id === selectedItemId);
   const versionOptions = useMemo(() => buildVersionOptions(project), [project]);
   const diffEntries = useMemo(() => diffVersions(project, leftVersion, rightVersion), [project, leftVersion, rightVersion]);
@@ -89,6 +103,10 @@ function App() {
     if (!versionOptions.some((option) => option.id === leftVersion)) setLeftVersion('current');
     if (!versionOptions.some((option) => option.id === rightVersion)) setRightVersion(versionOptions[1]?.id ?? '');
   }, [project.id, project.items, project.stages, project.revision, selectedItemId, quickStageId, versionOptions, leftVersion, rightVersion]);
+
+  useEffect(() => {
+    setWorkflowError('');
+  }, [project.id, project.revision, project.status]);
 
   useEffect(() => {
     localStorage.setItem('sologsb-1030-theme', appearance);
@@ -149,6 +167,39 @@ function App() {
     challengeRef.current?.focus();
   }
 
+  function handleSubmitForReview() {
+    const result = store.submitForReview(submitterName, errors > 0);
+    setWorkflowError(result.ok ? '' : result.message ?? '提交复核失败。');
+    if (result.ok) {
+      setSubmitOpen(false);
+      setSubmitterName('');
+    }
+  }
+
+  function handleReturn() {
+    const result = store.returnForRevision(returnReason);
+    setWorkflowError(result.ok ? '' : result.message ?? '退回失败。');
+    if (result.ok) {
+      setReturnOpen(false);
+      setReturnReason('');
+    }
+  }
+
+  function handleFreeze() {
+    const result = store.freezeRevision(reviewerName, freezeNote);
+    setWorkflowError(result.ok ? '' : result.message ?? '冻结失败。');
+    if (result.ok) {
+      setFreezeOpen(false);
+      setReviewerName('');
+      setFreezeNote('');
+    }
+  }
+
+  function handleCreateRevision() {
+    const result = store.createRevision();
+    setWorkflowError(result.ok ? '' : result.message ?? '创建修订失败。');
+  }
+
   function selectIssue(issue: ValidationIssue) {
     if (issue.itemId) setSelectedItemId(issue.itemId);
     setActiveTab('editor');
@@ -163,12 +214,18 @@ function App() {
       `).join('');
       return `<section><h2>${escapeHtml(stage.name)}</h2><p>${escapeHtml(stage.description)}</p><table><thead><tr><th>挑战语</th><th>预期回应</th><th>异常处置</th></tr></thead><tbody>${rows || '<tr><td colspan="3">本阶段暂无项目</td></tr>'}</tbody></table></section>`;
     }).join('');
+    const signatureHtml = project.status === 'frozen'
+      ? (project.approval
+        ? `<section class="signatures"><h2>签认留痕</h2><p>提交人：${escapeHtml(project.approval.submitterName)} · ${formatDateTime(project.approval.submittedAt)} · 指纹 ${shortFingerprint(project.approval.submittedFingerprint)}</p><p>复核人：${escapeHtml(project.approval.reviewerName ?? '—')} · ${formatDateTime(project.approval.reviewedAt)} · 指纹 ${shortFingerprint(project.approval.reviewedFingerprint)}</p></section>`
+        : '<section class="signatures"><h2>历史留档</h2><p>该冻结版本形成于新签认流程启用前，无提交/复核签认数据，仅供查阅与比较。</p></section>')
+      : '';
     const documentHtml = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(project.name)}</title><style>
       body{font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111;margin:36px}
       h1{margin:0 0 4px} .meta{color:#666;margin-bottom:28px} h2{border-bottom:2px solid #222;padding-bottom:5px;margin-top:26px}
       table{width:100%;border-collapse:collapse} th,td{border:1px solid #bbb;padding:7px;text-align:left;vertical-align:top} th{background:#eee}
+      .signatures p{margin:6px 0}
       @media print{body{margin:15mm}section{break-inside:avoid}}
-    </style></head><body><h1>${escapeHtml(project.name)}</h1><div class="meta">${escapeHtml(project.aircraft)} · r${project.revision} · ${escapeHtml(statusMeta[project.status].label)} · 导出 ${new Date().toLocaleString('zh-CN')}</div>${body}</body></html>`;
+    </style></head><body><h1>${escapeHtml(project.name)}</h1><div class="meta">${escapeHtml(project.aircraft)} · r${project.revision} · ${escapeHtml(statusMeta[project.status].label)} · 导出 ${new Date().toLocaleString('zh-CN')}</div>${body}${signatureHtml}</body></html>`;
     const url = URL.createObjectURL(new Blob([documentHtml], { type: 'text/html;charset=utf-8' }));
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -233,11 +290,13 @@ function App() {
             ))}
           </div>
           <Flex gap="2" align="center" wrap="wrap">
-            <Badge color={statusMeta[project.status].color} size="2">r{project.revision} · {statusMeta[project.status].label}</Badge>
+            <Badge color={statusMeta[project.status].color} size="2">r{project.revision} · {statusMeta[project.status].label}{project.status === 'frozen' && !project.approval ? ' · 历史留档' : ''}</Badge>
             <Text size="1" color="gray">{errors ? `${errors} 个阻断` : '无阻断问题'} · {warnings} 个警告</Text>
-            {project.status === 'draft' && <Button color="amber" onClick={store.submitForReview} disabled={errors > 0}>提交复核</Button>}
-            {project.status === 'review' && <Button color="green" onClick={() => setFreezeOpen(true)} disabled={errors > 0}>复核通过并冻结</Button>}
-            {project.status === 'frozen' && <Button onClick={store.createRevision}>创建修订 r{project.revision + 1}</Button>}
+            {workflowError && <Badge color="red" size="2">{workflowError}</Badge>}
+            {project.status === 'draft' && <Button color="amber" onClick={() => { setWorkflowError(''); setSubmitOpen(true); }} disabled={errors > 0 || unchangedAfterReturn}>提交复核</Button>}
+            {project.status === 'review' && <Button color="red" variant="soft" onClick={() => { setWorkflowError(''); setReturnOpen(true); }}>退回修改</Button>}
+            {project.status === 'review' && <Button color="green" onClick={() => { setWorkflowError(''); setFreezeOpen(true); }} disabled={errors > 0 || fingerprintChanged}>复核通过并冻结</Button>}
+            {project.status === 'frozen' && <Button onClick={handleCreateRevision}>创建修订 r{project.revision + 1}</Button>}
             <Button variant="soft" onClick={() => setShowPreview(true)}>只读预览</Button>
             <Button variant="soft" onClick={() => window.print()}>打印</Button>
             <Button variant="soft" onClick={exportPrintableHtml}>导出打印版</Button>
@@ -283,9 +342,10 @@ function App() {
                 <section className="checklist-main">
                   <div className="list-heading">
                     <div><Heading size="6">{project.name}</Heading><Text color="gray">{project.aircraft} · {project.items.length} 个检查项 · {project.stages.length} 个阶段</Text></div>
-                    <Badge color={project.status === 'draft' ? 'gray' : project.status === 'review' ? 'amber' : 'green'}>{statusMeta[project.status].label}</Badge>
+                    <Badge color={project.status === 'draft' ? 'gray' : project.status === 'review' ? 'amber' : 'green'}>{statusMeta[project.status].label}{project.status === 'frozen' && !project.approval ? ' · 历史留档' : ''}</Badge>
                   </div>
                   {project.status !== 'draft' && <Callout.Root color={project.status === 'review' ? 'amber' : 'green'} mb="4"><Callout.Text>{statusMeta[project.status].description} 当前内容不能直接编辑。</Callout.Text></Callout.Root>}
+                  <SignaturePanel project={project} currentFingerprint={currentFingerprint} fingerprintChanged={fingerprintChanged} />
 
                   <div className="quick-entry">
                     <Select.Root value={quickStageId || undefined} onValueChange={setQuickStageId} disabled={project.status !== 'draft'}>
@@ -412,7 +472,29 @@ function App() {
             <Tabs.Content value="versions">
               <div className="content-page">
                 <Heading size="7">版本差异</Heading>
-                <Text color="gray" as="p">冻结版本不可修改；创建修订后形成新的编辑中版本。</Text>
+                <Text color="gray" as="p">冻结版本不可修改；历史留档可继续比较但不能补签，创建新修订后才按新签认流程办理。</Text>
+                <div className="revision-archive">
+                  {project.revisions.map((revision) => (
+                    <Card key={revision.id} className={`revision-card ${revision.approval ? '' : 'legacy'}`}>
+                      <Flex justify="between" align="start" gap="3">
+                        <div>
+                          <Flex gap="2" align="center" mb="2"><Heading size="4">r{revision.revision}</Heading><Badge color={revision.approval ? 'green' : 'gray'}>{revision.approval ? '签认冻结' : '历史留档'}</Badge></Flex>
+                          <Text size="2" as="p">{revision.note}</Text>
+                          <Text size="1" color="gray" as="p">{formatDateTime(revision.createdAt)}</Text>
+                          {revision.approval ? (
+                            <div className="signature-lines">
+                              <span>提交：{revision.approval.submitterName} · {shortFingerprint(revision.approval.submittedFingerprint)}</span>
+                              <span>复核：{revision.approval.reviewerName} · {shortFingerprint(revision.approval.reviewedFingerprint)}</span>
+                            </div>
+                          ) : <Text size="1" color="amber" as="p">旧流程冻结，无签认数据；不支持补签。</Text>}
+                        </div>
+                        <Flex gap="1">
+                          <Button size="1" variant="soft" onClick={() => { setLeftVersion('current'); setRightVersion(revision.id); }}>与当前比较</Button>
+                        </Flex>
+                      </Flex>
+                    </Card>
+                  ))}
+                </div>
                 <div className="version-controls">
                   <label><span>基准版本</span><Select.Root value={leftVersion} onValueChange={setLeftVersion}><Select.Trigger variant="soft" /><Select.Content position="popper">{versionOptions.map((option) => <Select.Item key={option.id} value={option.id}>{option.label}</Select.Item>)}</Select.Content></Select.Root></label>
                   <span className="version-arrow">→</span>
@@ -448,18 +530,50 @@ function App() {
       <Dialog.Root open={showPreview} onOpenChange={setShowPreview}>
         <Dialog.Content maxWidth="850px" className="preview-dialog">
           <Dialog.Title>只读检查单预览</Dialog.Title>
-          <Dialog.Description size="2" color="gray">{project.name} · r{project.revision} · {statusMeta[project.status].label}</Dialog.Description>
+          <Dialog.Description size="2" color="gray">{project.name} · r{project.revision} · {statusMeta[project.status].label}{project.status === 'frozen' && !project.approval ? ' · 历史留档' : ''}</Dialog.Description>
           <div className="dialog-scroll"><PrintableChecklist project={project} compact /></div>
           <Flex gap="3" justify="end" mt="4"><Dialog.Close><Button variant="soft">关闭</Button></Dialog.Close><Button onClick={() => window.print()}>打印</Button></Flex>
         </Dialog.Content>
       </Dialog.Root>
 
-      <Dialog.Root open={freezeOpen} onOpenChange={setFreezeOpen}>
+      <Dialog.Root open={submitOpen} onOpenChange={(open) => { setSubmitOpen(open); if (!open) setWorkflowError(''); }}>
         <Dialog.Content maxWidth="520px">
-          <Dialog.Title>冻结 r{project.revision}</Dialog.Title>
-          <Dialog.Description size="2" color="gray">冻结后不可直接编辑，只能通过创建新修订继续修改。</Dialog.Description>
-          <TextArea mt="4" value={freezeNote} onChange={(event) => setFreezeNote(event.target.value)} placeholder="复核意见或版本说明" />
-          <Flex gap="3" justify="end" mt="4"><Dialog.Close><Button variant="soft">取消</Button></Dialog.Close><Button color="green" onClick={() => { store.freezeRevision(freezeNote); setFreezeOpen(false); setFreezeNote(''); }}>确认冻结</Button></Flex>
+          <Dialog.Title>提交 r{project.revision} 复核</Dialog.Title>
+          <Dialog.Description size="2" color="gray">提交后内容将锁定，并记录提交人、提交时间和内容指纹。</Dialog.Description>
+          <label className="dialog-field"><span>提交人姓名</span><TextField.Root value={submitterName} onChange={(event) => setSubmitterName(event.target.value)} placeholder="由编辑/提交人签署" autoFocus /></label>
+          <Callout.Root mt="3" variant="soft"><Callout.Text size="1">当前内容指纹：<code>{currentFingerprint.slice(0, 12).toUpperCase()}</code>{errors > 0 ? ` · 仍有 ${errors} 个阻断错误` : ' · 结构校验无阻断'}</Callout.Text></Callout.Root>
+          {workflowError && <Callout.Root color="red" mt="3"><Callout.Text size="2">{workflowError}</Callout.Text></Callout.Root>}
+          <Flex gap="3" justify="end" mt="4"><Dialog.Close><Button variant="soft">取消</Button></Dialog.Close><Button color="amber" disabled={!normalizeName(submitterName) || errors > 0 || unchangedAfterReturn} onClick={handleSubmitForReview}>提交复核</Button></Flex>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      <Dialog.Root open={returnOpen} onOpenChange={(open) => { setReturnOpen(open); if (!open) setWorkflowError(''); }}>
+        <Dialog.Content maxWidth="520px">
+          <Dialog.Title>退回 r{project.revision} 修改</Dialog.Title>
+          <Dialog.Description size="2" color="gray">退回后旧提交签认立即失效；必须修改内容后才能重新提交。</Dialog.Description>
+          <TextArea mt="4" value={returnReason} onChange={(event) => setReturnReason(event.target.value)} placeholder="退回原因 / 必须修改项" />
+          {workflowError && <Callout.Root color="red" mt="3"><Callout.Text size="2">{workflowError}</Callout.Text></Callout.Root>}
+          <Flex gap="3" justify="end" mt="4"><Dialog.Close><Button variant="soft">取消</Button></Dialog.Close><Button color="red" disabled={!returnReason.trim()} onClick={handleReturn}>确认退回</Button></Flex>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      <Dialog.Root open={freezeOpen} onOpenChange={(open) => { setFreezeOpen(open); if (!open) setWorkflowError(''); }}>
+        <Dialog.Content maxWidth="560px">
+          <Dialog.Title>复核并冻结 r{project.revision}</Dialog.Title>
+          <Dialog.Description size="2" color="gray">复核人必须不同于提交人；仅当提交指纹与当前指纹一致时可冻结。</Dialog.Description>
+          {approval && (
+            <div className="freeze-check">
+              <div><span>提交人</span><strong>{approval.submitterName}</strong><small>{formatDateTime(approval.submittedAt)}</small></div>
+              <div><span>提交指纹</span><code>{shortFingerprint(approval.submittedFingerprint)}</code></div>
+              <div><span>当前指纹</span><code className={fingerprintChanged ? 'invalid' : 'valid'}>{currentFingerprint.slice(0, 8).toUpperCase()}</code></div>
+            </div>
+          )}
+          <label className="dialog-field"><span>复核人姓名（须为另一位人员）</span><TextField.Root value={reviewerName} onChange={(event) => setReviewerName(event.target.value)} placeholder="由复核人签署" autoFocus /></label>
+          <TextArea mt="3" value={freezeNote} onChange={(event) => setFreezeNote(event.target.value)} placeholder="复核意见或版本说明" />
+          {fingerprintChanged && <Callout.Root color="red" mt="3"><Callout.Text size="2">内容指纹已变化，不能冻结；请退回并在修改后重新提交。</Callout.Text></Callout.Root>}
+          {sameReviewerName && <Callout.Root color="red" mt="3"><Callout.Text size="2">复核人与提交人姓名相同，不符合分离要求。</Callout.Text></Callout.Root>}
+          {workflowError && <Callout.Root color="red" mt="3"><Callout.Text size="2">{workflowError}</Callout.Text></Callout.Root>}
+          <Flex gap="3" justify="end" mt="4"><Dialog.Close><Button variant="soft">取消</Button></Dialog.Close><Button color="green" disabled={freezeBlocked} onClick={handleFreeze}>确认冻结</Button></Flex>
         </Dialog.Content>
       </Dialog.Root>
 
@@ -482,11 +596,86 @@ function App() {
   );
 }
 
+function SignaturePanel({ project, currentFingerprint, fingerprintChanged }: { project: ChecklistProject; currentFingerprint: string; fingerprintChanged: boolean }) {
+  if (project.status === 'draft') {
+    if (!project.lastReturn) {
+      return (
+        <Card className="approval-panel idle" mb="4">
+          <Flex justify="between" align="center" gap="3">
+            <div><strong>编辑与复核分离</strong><Text size="2" as="p" color="gray">提交复核时记录提交人、内容指纹和时间；复核冻结须由另一位复核人签认。</Text></div>
+            <Badge variant="soft">当前指纹 {shortFingerprint(currentFingerprint)}</Badge>
+          </Flex>
+        </Card>
+      );
+    }
+    return (
+      <Callout.Root color="red" mb="4">
+        <Callout.Text>
+          上次复核已于 {formatDateTime(project.lastReturn.returnedAt)} 退回：{project.lastReturn.reason}
+          {project.lastReturn.fingerprint === currentFingerprint ? ' 当前内容尚未修改，不能重新提交。' : ' 内容已修改，可重新提交复核。'}
+        </Callout.Text>
+      </Callout.Root>
+    );
+  }
+
+  if (project.status === 'review' && project.approval) {
+    return (
+      <Card className={`approval-panel ${fingerprintChanged ? 'invalid' : 'valid'}`} mb="4">
+        <Flex justify="between" align="start" gap="4">
+          <div className="signature-lines">
+            <span><strong>提交人</strong>{project.approval.submitterName}</span>
+            <span><strong>提交时间</strong>{formatDateTime(project.approval.submittedAt)}</span>
+            <span><strong>提交指纹</strong>{shortFingerprint(project.approval.submittedFingerprint)}</span>
+            <span><strong>当前指纹</strong>{shortFingerprint(currentFingerprint)}</span>
+          </div>
+          <Badge color={fingerprintChanged ? 'red' : 'green'}>{fingerprintChanged ? '指纹已变化：旧签认失效' : '指纹一致：等待复核'}</Badge>
+        </Flex>
+      </Card>
+    );
+  }
+
+  if (project.status === 'frozen') {
+    if (!project.approval) {
+      return (
+        <Callout.Root color="amber" mb="4">
+          <Callout.Text>历史留档：该冻结版本没有提交/复核签认数据，可继续只读查看和版本比较，但不能补签；创建新修订后才按新流程办理。</Callout.Text>
+        </Callout.Root>
+      );
+    }
+    return (
+      <Card className="approval-panel valid" mb="4">
+        <Flex justify="between" align="start" gap="4">
+          <div className="signature-lines">
+            <span><strong>提交人</strong>{project.approval.submitterName} · {formatDateTime(project.approval.submittedAt)} · {shortFingerprint(project.approval.submittedFingerprint)}</span>
+            <span><strong>复核人</strong>{project.approval.reviewerName} · {formatDateTime(project.approval.reviewedAt)} · {shortFingerprint(project.approval.reviewedFingerprint)}</span>
+          </div>
+          <Badge color="green">签认完整</Badge>
+        </Flex>
+      </Card>
+    );
+  }
+  return null;
+}
+
+function PrintableSignatureRecord({ approval }: { approval: ReviewApproval | null }) {
+  return (
+    <section className="print-signatures">
+      <div className="print-stage-title"><span>签</span><div><Heading size="5">{approval ? '签认留痕' : '历史留档'}</Heading></div></div>
+      {approval ? (
+        <table>
+          <thead><tr><th>提交人 / 时间 / 指纹</th><th>复核人 / 时间 / 指纹</th></tr></thead>
+          <tbody><tr><td>{approval.submitterName}<br />{formatDateTime(approval.submittedAt)}<br />{shortFingerprint(approval.submittedFingerprint)}</td><td>{approval.reviewerName ?? '—'}<br />{formatDateTime(approval.reviewedAt)}<br />{shortFingerprint(approval.reviewedFingerprint)}</td></tr></tbody>
+        </table>
+      ) : <Text size="2" color="gray">该版本形成于新签认流程启用前，无签认数据，不能补签；仅供历史查阅与比较。</Text>}
+    </section>
+  );
+}
+
 function PrintableChecklist({ project, compact = false }: { project: ChecklistProject; compact?: boolean }) {
   const stages = project.stages.slice().sort((a, b) => a.order - b.order);
   return (
     <article className={`print-sheet ${compact ? 'compact' : ''}`}>
-      <header><div><Heading size="7">{project.name}</Heading><Text color="gray" as="p">{project.aircraft} · r{project.revision} · {statusMeta[project.status].label}</Text></div><Badge color={statusMeta[project.status].color}>{project.items.length} 项</Badge></header>
+      <header><div><Heading size="7">{project.name}</Heading><Text color="gray" as="p">{project.aircraft} · r{project.revision} · {statusMeta[project.status].label}{project.status === 'frozen' && !project.approval ? ' · 历史留档' : ''}</Text></div><Badge color={statusMeta[project.status].color}>{project.items.length} 项</Badge></header>
       {stages.map((stage, index) => (
         <section key={stage.id}>
           <div className="print-stage-title"><span>{String(index + 1).padStart(2, '0')}</span><div><Heading size="5">{stage.name}</Heading><Text color="gray" size="1">{stage.description}</Text></div></div>
@@ -501,6 +690,7 @@ function PrintableChecklist({ project, compact = false }: { project: ChecklistPr
           </table>
         </section>
       ))}
+      {project.status === 'frozen' && <PrintableSignatureRecord approval={project.approval} />}
     </article>
   );
 }

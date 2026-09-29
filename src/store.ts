@@ -1,18 +1,44 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { contentFingerprint, normalizeName } from './approval';
 import { createInitialState } from './data';
 import type { ChecklistItem, ChecklistProject, ChecklistRevision, FlightStage, WorkspaceState } from './types';
+
+export interface WorkflowResult {
+  ok: boolean;
+  message?: string;
+}
 
 const STORAGE_KEY = 'sologsb-1030-workspace-v1';
 const clone = <T>(value: T): T => structuredClone(value);
 const uid = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 const now = () => new Date().toISOString();
 
+function normalizeProject(project: ChecklistProject): ChecklistProject {
+  project.approval ??= null;
+  project.lastReturn ??= null;
+  project.reviewNote ??= '';
+  if (project.status !== 'draft' && project.status !== 'review' && project.status !== 'frozen') {
+    project.status = 'draft';
+  }
+  project.revisions.forEach((revision) => {
+    revision.approval ??= null;
+    if (revision.status !== 'frozen') revision.status = 'frozen';
+  });
+  if (project.status === 'review' && !project.approval) {
+    project.status = 'draft';
+  }
+  return project;
+}
+
 function loadState(): WorkspaceState {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved) as WorkspaceState;
-      if (parsed.schemaVersion === 1 && parsed.projects?.length) return parsed;
+      if (parsed.schemaVersion === 1 && parsed.projects?.length) {
+        parsed.projects.forEach(normalizeProject);
+        return parsed;
+      }
     }
   } catch {
     // Corrupted local draft falls back to the bundled operational checklist.
@@ -32,6 +58,8 @@ function updateSelected(state: WorkspaceState, mutator: (project: ChecklistProje
 
 export function useChecklistStore() {
   const [state, setState] = useState<WorkspaceState>(loadState);
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const past = useRef<WorkspaceState[]>([]);
   const future = useRef<WorkspaceState[]>([]);
   const [, forceHistoryState] = useState(0);
@@ -52,13 +80,22 @@ export function useChecklistStore() {
     });
   }, []);
 
-  const directUpdate = useCallback((mutator: (project: ChecklistProject) => void) => {
-    setState((current) => {
-      past.current = [...past.current.slice(-39), clone(current)];
-      future.current = [];
-      forceHistoryState((value) => value + 1);
-      return updateSelected(current, mutator);
-    });
+  const selectProjectRef = useRef(state.selectedProjectId);
+  selectProjectRef.current = state.selectedProjectId;
+
+  const workflowUpdate = useCallback((mutator: (project: ChecklistProject) => WorkflowResult): WorkflowResult => {
+    const draft = clone(stateRef.current);
+    const project = draft.projects.find((entry) => entry.id === selectProjectRef.current);
+    if (!project) return { ok: false, message: '未找到检查单项目。' };
+    const result = mutator(project);
+    if (!result.ok) return result;
+    project.updatedAt = now();
+    past.current = [];
+    future.current = [];
+    forceHistoryState((value) => value + 1);
+    stateRef.current = draft;
+    setState(draft);
+    return result;
   }, []);
 
   const selectedProject = state.projects.find((project) => project.id === state.selectedProjectId) ?? state.projects[0];
@@ -81,6 +118,8 @@ export function useChecklistStore() {
         status: 'draft',
         updatedAt: now(),
         reviewNote: '',
+        approval: null,
+        lastReturn: null,
         stages: [{ id: uid('stage'), name: '飞行前检查', order: 0, description: '说明本阶段目标。' }],
         items: [],
         revisions: []
@@ -182,39 +221,91 @@ export function useChecklistStore() {
     });
   }, [commit]);
 
-  const submitForReview = useCallback(() => {
-    directUpdate((project) => {
+  const submitForReview = useCallback((submitterName: string, hasBlockingErrors: boolean): WorkflowResult => {
+    const submitter = normalizeName(submitterName);
+    return workflowUpdate((project) => {
+      if (project.status !== 'draft') return { ok: false, message: '只有编辑中的版本可以提交复核。' };
+      if (!submitter) return { ok: false, message: '请填写提交人姓名。' };
+      if (hasBlockingErrors) return { ok: false, message: '仍存在阻断错误，不能提交复核。' };
+      const fingerprint = contentFingerprint(project);
+      if (project.lastReturn && project.lastReturn.fingerprint === fingerprint) {
+        return { ok: false, message: '退回后的内容尚未修改，请完成修订后再提交。' };
+      }
       project.status = 'review';
       project.reviewNote = '';
-    });
-  }, [directUpdate]);
-
-  const freezeRevision = useCallback((note: string) => {
-    directUpdate((project) => {
-      const version = project.revision;
-      const snapshot: ChecklistRevision = {
-        id: uid('revision'),
-        revision: version,
-        status: 'frozen',
-        createdAt: now(),
-        note: note.trim() || '复核通过并冻结',
-        stages: clone(project.stages),
-        items: clone(project.items)
+      project.approval = {
+        submitterName: submitter,
+        submittedAt: now(),
+        submittedFingerprint: fingerprint
       };
-      project.revisions.unshift(snapshot);
-      project.status = 'frozen';
-      project.reviewNote = note.trim();
+      return { ok: true };
     });
-  }, [directUpdate]);
+  }, [workflowUpdate]);
 
-  const createRevision = useCallback(() => {
-    directUpdate((project) => {
-      project.revision += 1;
-      project.status = 'draft';
-      project.reviewNote = '';
-      project.updatedAt = now();
-    });
-  }, [directUpdate]);
+  const returnForRevision = useCallback((reason: string): WorkflowResult => workflowUpdate((project) => {
+    if (project.status !== 'review' || !project.approval) return { ok: false, message: '只有已提交复核的版本可以退回。' };
+    const normalizedReason = reason.trim();
+    if (!normalizedReason) return { ok: false, message: '请填写退回原因。' };
+    const fingerprint = contentFingerprint(project);
+    project.status = 'draft';
+    project.reviewNote = normalizedReason;
+    project.lastReturn = { reason: normalizedReason, fingerprint, returnedAt: now() };
+    project.approval = null;
+    return { ok: true };
+  }), [workflowUpdate]);
+
+  const freezeRevision = useCallback((reviewerName: string, note: string): WorkflowResult => workflowUpdate((project) => {
+    const reviewer = normalizeName(reviewerName);
+    if (project.status !== 'review') return { ok: false, message: '只有复核中的版本可以冻结。' };
+    if (project.revisions.some((revision) => revision.revision === project.revision)) {
+      return { ok: false, message: `r${project.revision} 已经冻结，同一版本不能重复冻结。` };
+    }
+    const approval = project.approval;
+    if (!approval) return { ok: false, message: '缺少提交签认记录，不能冻结。' };
+    if (!reviewer) return { ok: false, message: '请填写复核人姓名。' };
+    if (normalizeName(approval.submitterName) === reviewer) {
+      return { ok: false, message: '复核人不能与提交人为同一人。' };
+    }
+    const fingerprint = contentFingerprint(project);
+    if (fingerprint !== approval.submittedFingerprint) {
+      return { ok: false, message: '提交后内容指纹已变化，旧签认失效，请退回修改后重新提交。' };
+    }
+
+    const frozenApproval = {
+      ...approval,
+      reviewerName: reviewer,
+      reviewedAt: now(),
+      reviewedFingerprint: fingerprint
+    };
+    const frozenNote = note.trim() || '复核通过并冻结';
+    const snapshot: ChecklistRevision = {
+      id: uid('revision'),
+      revision: project.revision,
+      status: 'frozen',
+      createdAt: now(),
+      note: frozenNote,
+      approval: frozenApproval,
+      stages: clone(project.stages),
+      items: clone(project.items)
+    };
+    project.revisions.unshift(snapshot);
+    project.status = 'frozen';
+    project.reviewNote = frozenNote;
+    project.approval = frozenApproval;
+    project.lastReturn = null;
+    return { ok: true };
+  }), [workflowUpdate]);
+
+  const createRevision = useCallback((): WorkflowResult => workflowUpdate((project) => {
+    if (project.status !== 'frozen') return { ok: false, message: '只有已冻结版本可以创建新修订。' };
+    project.revision += 1;
+    project.status = 'draft';
+    project.reviewNote = '';
+    project.approval = null;
+    project.lastReturn = null;
+    project.updatedAt = now();
+    return { ok: true };
+  }), [workflowUpdate]);
 
   const undo = useCallback(() => {
     setState((current) => {
@@ -259,6 +350,7 @@ export function useChecklistStore() {
     reorderItem,
     nudgeItem,
     submitForReview,
+    returnForRevision,
     freezeRevision,
     createRevision,
     undo,
